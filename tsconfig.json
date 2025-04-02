@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "esnext",
+    "module": "CommonJS",
     "lib": [
       "dom",
       "dom.iterable",
