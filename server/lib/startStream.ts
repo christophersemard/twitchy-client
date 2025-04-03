@@ -6,30 +6,74 @@ export interface StreamData {
     video: string; // base64
 }
 
-export const startStream = (onData: (data: StreamData) => void) => {
-    console.log("[gRPC] Starting stream...");
-    const stream = grpcClient.GetStream({ dummy: 0 });
+let isStreaming = false;
+let retryTimer: NodeJS.Timeout | null = null;
 
-    if (!stream) {
-        console.error("[gRPC] ❌ Failed to start stream");
+export const startStream = (
+    onData: (data: StreamData) => void,
+    onEnd?: () => void
+) => {
+    if (isStreaming) {
+        console.warn("[gRPC] ⚠️ Stream déjà en cours, skip.");
         return;
     }
 
+    console.log("[gRPC] 🔄 Démarrage du stream...");
+    const stream = grpcClient.GetStream({ dummy: 0 });
+
+    if (!stream) {
+        console.error("[gRPC] ❌ Impossible de démarrer le flux (stream null)");
+        return;
+    }
+
+    isStreaming = true;
+
     stream.on("data", (chunk: any) => {
-        console.log("[gRPC] Received data:", chunk);
-        const parsed: StreamData = {
-            ts: Number(chunk.ts),
-            audio: chunk.audio.toString("base64"),
-            video: chunk.video.toString("base64"),
-        };
-        onData(parsed);
+        try {
+            const parsed: StreamData = {
+                ts: Number(chunk.ts),
+                audio: Buffer.isBuffer(chunk.audio)
+                    ? chunk.audio.toString("base64")
+                    : "",
+                video: Buffer.isBuffer(chunk.video)
+                    ? chunk.video.toString("base64")
+                    : "",
+            };
+            onData(parsed);
+        } catch (err) {
+            console.error("[gRPC] ❌ Erreur parsing data :", err);
+        }
     });
 
     stream.on("error", (err: any) => {
-        console.error("[gRPC] ❌ Stream error:", err.message);
+        console.error("[gRPC] ❌ Erreur du stream :", err.message || err);
+        isStreaming = false;
+        if (!retryTimer) {
+            console.log("[gRPC] 🔁 Reconnexion dans 3s...");
+            retryTimer = setTimeout(() => {
+                retryTimer = null;
+                startStream(onData, onEnd);
+            }, 3000);
+        }
     });
 
     stream.on("end", () => {
-        console.warn("[gRPC] 🚫 Stream ended");
+        console.warn("[gRPC] 🚫 Flux terminé.");
+        isStreaming = false;
+        onEnd?.();
+
+        if (!retryTimer) {
+            console.log("[gRPC] 🔁 Reconnexion dans 3s...");
+            retryTimer = setTimeout(() => {
+                retryTimer = null;
+                startStream(onData, onEnd);
+            }, 3000);
+        }
+    });
+
+    // En cas d’annulation côté serveur
+    stream.on("cancelled", () => {
+        console.warn("[gRPC] 🚫 Stream annulé par le serveur.");
+        isStreaming = false;
     });
 };
