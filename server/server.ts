@@ -1,11 +1,14 @@
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { startStream } from "./lib/startStream";
+import ffmpeg from "fluent-ffmpeg";
+import stream from "stream";
+import { PassThrough } from "stream";
 
 interface StreamData {
     ts: number;
-    audio: string;
-    video: string;
+    audio: Buffer;
+    video: Buffer;
 }
 
 interface AliveWebSocket extends WebSocket {
@@ -16,7 +19,7 @@ const server = http.createServer();
 const wss = new WebSocketServer({ server });
 const clients = new Set<AliveWebSocket>();
 
-// Ping/pong heartbeat
+// 🩺 Ping/pong heartbeat
 function setupHeartbeat(ws: AliveWebSocket) {
     ws.isAlive = true;
     ws.on("pong", () => {
@@ -37,7 +40,6 @@ setInterval(() => {
     }
 }, 30000);
 
-// Connexion WebSocket
 wss.on("connection", (ws) => {
     const socket = ws as AliveWebSocket;
     console.log("[WS] ✅ Client connecté");
@@ -55,7 +57,55 @@ wss.on("connection", (ws) => {
     });
 });
 
-// Initialisation unique du flux
+// 📦 Buffer circulaire MPEG-TS
+const tsBufferChunks: Buffer[] = [];
+const MAX_TOTAL_SIZE = 500 * 1024; // 500 Ko
+
+function appendToCircularBuffer(chunk: Buffer) {
+    tsBufferChunks.push(chunk);
+
+    // Supprime les plus anciens si trop gros
+    while (getTotalSize() > MAX_TOTAL_SIZE) {
+        tsBufferChunks.shift();
+    }
+}
+
+function getTotalSize(): number {
+    return tsBufferChunks.reduce((acc, buf) => acc + buf.length, 0);
+}
+
+// 🎞️ Conversion MPEG-TS → WebP (1 frame)
+function convertToWebP(buffer: Buffer): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+        const inputStream = new PassThrough();
+        inputStream.end(buffer);
+
+        const outputChunks: Buffer[] = [];
+
+        ffmpeg(inputStream)
+            .inputFormat("mpegts")
+            .noAudio()
+            .outputFormat("webp")
+            .outputOptions("-frames:v", "1")
+            .on("error", (err) => {
+                console.error(
+                    "[CONVERT] ❌ Erreur conversion WebP :",
+                    err.message
+                );
+                reject(err);
+            })
+            .on("end", () => {
+                console.log("[CONVERT] ✅ Image WebP générée");
+                resolve(Buffer.concat(outputChunks));
+            })
+            .pipe()
+            .on("data", (chunk: Buffer) => {
+                outputChunks.push(chunk);
+            });
+    });
+}
+
+// 🚀 Initialisation du flux gRPC
 let streamActive = false;
 
 function startStreamingOnce() {
@@ -65,27 +115,27 @@ function startStreamingOnce() {
     console.log("[STREAM] Démarrage du flux gRPC");
 
     startStream(
-        (data: StreamData) => {
-            const message = JSON.stringify(data);
-            let sentCount = 0;
+        async (data: StreamData) => {
+            appendToCircularBuffer(data.video);
 
-            for (const client of clients) {
-                if (client.readyState === WebSocket.OPEN) {
-                    client.send(message);
-                    sentCount++;
+            try {
+                const bufferToConvert = Buffer.concat(tsBufferChunks);
+                const webpBuffer = await convertToWebP(bufferToConvert);
+
+                for (const client of clients) {
+                    if (client.readyState === WebSocket.OPEN) {
+                        client.send(webpBuffer);
+                    }
                 }
-            }
-
-            if (sentCount > 0) {
-                console.log(
-                    `[STREAM] → ${sentCount} client(s) ont reçu un message (ts=${data.ts})`
+            } catch (err) {
+                console.warn(
+                    "[STREAM] ❌ Échec conversion frame :",
+                    (err as Error).message
                 );
             }
         },
         () => {
-            console.warn(
-                "[STREAM] Flux terminé. Tentative de reconnexion dans 3s..."
-            );
+            console.warn("[STREAM] 🚫 Flux terminé. Reconnexion dans 3s.");
             streamActive = false;
 
             setTimeout(() => {
@@ -95,9 +145,9 @@ function startStreamingOnce() {
     );
 }
 
-// Lancer le serveur
+// 🟢 Lancer le serveur
 const PORT = 4000;
 server.listen(PORT, () => {
     console.log(`🚀 Serveur WebSocket prêt sur ws://localhost:${PORT}`);
-    startStreamingOnce(); // Lance une seule fois, et redémarre si erreur
+    startStreamingOnce();
 });

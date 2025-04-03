@@ -2,8 +2,8 @@ import { grpcClient } from "./grpcClient";
 
 export interface StreamData {
     ts: number;
-    audio: string; // base64
-    video: string; // base64
+    audio: Buffer; // base64
+    video: Buffer; // base64
 }
 
 let isStreaming = false;
@@ -32,12 +32,8 @@ export const startStream = (
         try {
             const parsed: StreamData = {
                 ts: Number(chunk.ts),
-                audio: Buffer.isBuffer(chunk.audio)
-                    ? chunk.audio.toString("base64")
-                    : "",
-                video: Buffer.isBuffer(chunk.video)
-                    ? chunk.video.toString("base64")
-                    : "",
+                audio: chunk.audio,
+                video: chunk.video,
             };
             onData(parsed);
         } catch (err) {
