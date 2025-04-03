@@ -7,10 +7,13 @@
     "start": "next start",
     "lint": "next lint",
     "dev": "next dev",
-    "ws": "node server.mjs"
+    "ws": "ts-node --project tsconfig.server.json  ./server/server.ts",
+    "mock:server": "ts-node --project tsconfig.scripts.json ./server/server/mockServer.ts",
+    "stream:test": "ts-node --project tsconfig.scripts.json ./server/scripts/testStream.ts"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.13.2",
+    "@grpc/proto-loader": "^0.7.13",
     "next": "15.2.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
