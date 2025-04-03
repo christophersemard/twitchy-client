@@ -19,7 +19,7 @@ const StreamPlayer: React.FC = () => {
 
   useEffect(() => {
     // Connexion au WebSocket (assurez-vous que l’URL correspond à votre endpoint)
-    const ws = new WebSocket('ws://localhost:3000/api/stream/socket');
+    const ws = new WebSocket('ws://localhost:4000');
     wsRef.current = ws;
 
     ws.onopen = () => {
