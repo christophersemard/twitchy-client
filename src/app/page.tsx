@@ -14,9 +14,9 @@ export default function Page() {
             }}
         >
             <h1>Projet Twitchy – Client Récepteur</h1>
-            {/* <Player /> */}
+            <Player />
             {/* <HLSStreamPlayer /> */}
-            <TestFrameImage />
+            {/* <TestFrameImage /> */}
         </div>
     );
 }

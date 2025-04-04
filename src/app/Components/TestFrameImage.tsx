@@ -57,7 +57,12 @@ const TestFrameImage = () => {
                 <img
                     src={imgSrc}
                     alt="Frame"
-                    style={{ maxWidth: "100%", border: "1px solid #ccc" }}
+                    style={{
+                        width: "300px",
+                        height: "250px",
+                        maxWidth: "100%",
+                        border: "1px solid #ccc",
+                    }}
                 />
             ) : (
                 <p>Aucune image reçue pour l’instant.</p>

@@ -1,207 +1,188 @@
+"use client";
+
 import { useEffect, useRef, useState } from "react";
 
-const WebMStreamPlayer = () => {
+const StreamPlayer = () => {
     const videoRef = useRef<HTMLVideoElement>(null);
-    const mediaSourceRef = useRef<MediaSource | null>(null);
-    const sourceBufferRef = useRef<SourceBuffer | null>(null);
     const [connected, setConnected] = useState(false);
-    const [fps, setFps] = useState(0);
-    const frameCount = useRef(0);
-    const queue: Uint8Array[] = [];
-    const [thumbnail, setThumbnail] = useState<string | null>(null); // Ajout de l'état pour l'image de prévisualisation
+    const [log, setLog] = useState<string[]>([]);
+    const bufferQueue = useRef<Uint8Array[]>([]);
+    const sourceBufferRef = useRef<SourceBuffer | null>(null);
+    const mediaSourceRef = useRef<MediaSource | null>(null);
+
+    const logEvent = (msg: string) => {
+        console.log(msg);
+        setLog((prev) => [msg, ...prev.slice(0, 100)]);
+    };
 
     useEffect(() => {
-        if (!window.MediaSource || !videoRef.current) {
-            console.error("MediaSource non supporté ou vidéo non trouvée");
+        const video = videoRef.current;
+        if (!video) {
+            logEvent("[VIDEO] ❌ Élément <video> introuvable");
             return;
         }
 
         const mediaSource = new MediaSource();
-        videoRef.current.src = URL.createObjectURL(mediaSource);
         mediaSourceRef.current = mediaSource;
+        video.src = URL.createObjectURL(mediaSource);
+        logEvent("[MEDIA] 🎬 MediaSource initialisé");
 
-        // Fonction pour créer un nouveau SourceBuffer
-        const createSourceBuffer = () => {
-            const mime = 'video/webm; codecs="vp8, vorbis"';
+        mediaSource.addEventListener("sourceopen", () => {
+            logEvent("[MEDIA] ✅ MediaSource ouvert");
+
+            const mime = 'video/mp4; codecs="avc1.42E01E"'; // Constrained Baseline Profile (H.264)
             if (!MediaSource.isTypeSupported(mime)) {
-                console.error("Type non supporté:", mime);
+                logEvent(`[MEDIA] ❌ Codec non supporté : ${mime}`);
                 return;
             }
 
-            const sourceBuffer = mediaSource.addSourceBuffer(mime);
-            sourceBufferRef.current = sourceBuffer;
+            try {
+                const sourceBuffer = mediaSource.addSourceBuffer(mime);
+                sourceBufferRef.current = sourceBuffer;
+                sourceBuffer.timestampOffset = 0;
+                logEvent(
+                    "[MEDIA] ✅ SourceBuffer ajouté avec timestampOffset=0"
+                );
 
-            sourceBuffer.addEventListener("updateend", () => {
-                if (queue.length && !sourceBuffer.updating) {
-                    const next = queue.shift();
-                    if (next) {
-                        try {
-                            console.log(
-                                "[VIDEO] 🎞️ appendBuffer direct",
-                                next.length,
-                                "octets"
-                            );
-                            if (
-                                sourceBuffer &&
-                                mediaSource.readyState === "open" &&
-                                !sourceBuffer.updating
-                            ) {
-                                sourceBuffer.appendBuffer(next);
-                            } else {
-                                console.error(
-                                    "[VIDEO] ❌ Le SourceBuffer ou le MediaSource n'est plus valide."
-                                );
-                            }
-                        } catch (err) {
-                            console.error(
-                                "[VIDEO] ❌ appendBuffer échoué:",
-                                err
-                            );
-                        }
-                    }
-                }
-            });
-        };
+                sourceBuffer.addEventListener("updateend", () => {
+                    logEvent(
+                        "[MEDIA] ✅ updateend — tentative prochain buffer"
+                    );
+                    pushNextBuffer();
+                });
+            } catch (err) {
+                logEvent(
+                    "[MEDIA] ❌ Erreur ajout SourceBuffer : " + String(err)
+                );
+                return;
+            }
 
-        mediaSource.addEventListener("sourceopen", () => {
-            createSourceBuffer();
-
-            const ws = new WebSocket("ws://localhost:4000");
+            const ws = new WebSocket("ws://localhost:4100");
             ws.binaryType = "arraybuffer";
 
             ws.onopen = () => {
-                console.log("[WS] ✅ Connecté");
+                logEvent("[WS] ✅ WebSocket connecté");
                 setConnected(true);
             };
 
             ws.onclose = () => {
-                console.log("[WS] ❌ Déconnecté");
+                logEvent("[WS] ❌ WebSocket déconnecté");
                 setConnected(false);
             };
 
-            ws.onmessage = (event) => {
-                const buffer = event.data as ArrayBuffer;
-                const view = new DataView(buffer);
-
-                const ts = view.getBigUint64(0, true);
-                const videoData = new Uint8Array(buffer.slice(8)); // Suppose 8 bytes pour timestamp
-
-                console.log(
-                    "[VIDEO] 🎬 Données vidéo reçues:",
-                    videoData.length
-                );
-
-                // Vérification de la validité du flux vidéo avant l'ajout
-                if (sourceBufferRef.current?.updating || queue.length > 0) {
-                    queue.push(videoData); // Si le buffer est en train de traiter des données, on les met dans la file d'attente
-                } else {
-                    try {
-                        console.log(
-                            "[VIDEO] 🎞️ appendBuffer direct (",
-                            videoData.length,
-                            "octets)"
-                        );
-                        if (
-                            sourceBufferRef.current &&
-                            mediaSource.readyState === "open" &&
-                            !sourceBufferRef.current.updating
-                        ) {
-                            sourceBufferRef.current.appendBuffer(videoData);
-                        } else {
-                            console.error(
-                                "[VIDEO] ❌ Le SourceBuffer ou le MediaSource n'est plus valide."
-                            );
-                        }
-                    } catch (err) {
-                        console.error("[VIDEO] ❌ appendBuffer échoué:", err);
-                    }
-
-                    // Si les données contiennent un segment d'image, tu peux l'extraire pour afficher la preview
-                    if (!thumbnail) {
-                        const blob = new Blob([videoData], {
-                            type: "image/webp",
-                        });
-                        const url = URL.createObjectURL(blob);
-                        setThumbnail(url); // Mettre à jour l'image de prévisualisation
-                    }
-                }
-
-                frameCount.current++;
+            ws.onerror = (err) => {
+                logEvent("[WS] ⚠️ Erreur WebSocket : " + String(err));
             };
 
-            const interval = setInterval(() => {
-                setFps(frameCount.current);
-                frameCount.current = 0;
-            }, 1000);
+            ws.onmessage = (event) => {
+                const chunk = new Uint8Array(event.data);
+                logEvent(`[WS] 📦 Chunk reçu (${chunk.length})`);
 
-            return () => {
-                ws.close();
-                clearInterval(interval);
-
-                // Avant de fermer, vérifier l'état de MediaSource
-                const mediaSource = mediaSourceRef.current;
-                if (mediaSource && mediaSource.readyState === "open") {
-                    try {
-                        console.log(
-                            "[VIDEO] Tentative de fermeture du MediaSource."
-                        );
-                        mediaSource.endOfStream();
-                    } catch (err) {
-                        console.error(
-                            "[VIDEO] ❌ Échec de la fermeture du MediaSource:",
-                            err
-                        );
-                    }
-                }
+                bufferQueue.current.push(chunk);
+                pushNextBuffer();
             };
         });
 
+        const pushNextBuffer = () => {
+            const video = videoRef.current;
+            const mediaSource = mediaSourceRef.current;
+            const sourceBuffer = sourceBufferRef.current;
+
+            if (
+                !sourceBuffer ||
+                !mediaSource ||
+                mediaSource.readyState !== "open" ||
+                sourceBuffer.updating ||
+                bufferQueue.current.length === 0
+            ) {
+                return;
+            }
+
+            const chunk = bufferQueue.current.shift();
+            if (!chunk) return;
+
+            try {
+                sourceBuffer.appendBuffer(chunk);
+                logEvent(`[MEDIA] 🎞️ Chunk ajouté (${chunk.length})`);
+
+                // Afficher l'état du buffer
+                const buffered = video?.buffered;
+                if (buffered && buffered.length > 0) {
+                    const start = buffered.start(0).toFixed(2);
+                    const end = buffered.end(0).toFixed(2);
+                    logEvent(`[VIDEO] ⏳ Buffer : ${start}s → ${end}s`);
+                }
+
+                // Essayer de jouer
+                video?.play().catch((err) => {
+                    logEvent("[VIDEO] ⚠️ Erreur play() : " + String(err));
+                });
+            } catch (err) {
+                logEvent("[MEDIA] ❌ Erreur appendBuffer : " + String(err));
+            }
+        };
+
+        video?.addEventListener("error", () => {
+            const error = video.error;
+            if (error) {
+                logEvent(
+                    `[VIDEO] ❌ Erreur code=${error.code} msg=${error.message}`
+                );
+                try {
+                    sourceBufferRef.current?.abort();
+                    mediaSourceRef.current?.endOfStream();
+                    logEvent("[MEDIA] 💥 Fin forcée du stream suite à erreur");
+                } catch (e) {
+                    logEvent("[MEDIA] ⚠️ endOfStream échoué : " + String(e));
+                }
+            }
+        });
+
         return () => {
-            // Lors du démontage, vérifier l'état avant de fermer
             const mediaSource = mediaSourceRef.current;
             if (mediaSource && mediaSource.readyState === "open") {
                 try {
-                    console.log(
-                        "[VIDEO] Tentative de fermeture du MediaSource (démontage)."
-                    );
                     mediaSource.endOfStream();
+                    logEvent("[MEDIA] 🔚 endOfStream appelé proprement");
                 } catch (err) {
-                    console.error(
-                        "[VIDEO] ❌ Échec de la fermeture du MediaSource (démontage):",
-                        err
+                    logEvent(
+                        "[MEDIA] ⚠️ Erreur lors du endOfStream : " + String(err)
                     );
                 }
             }
         };
-    }, [thumbnail]);
+    }, []);
 
     return (
-        <div style={{ padding: "1rem", maxWidth: 640, margin: "0 auto" }}>
-            <div style={{ marginBottom: "1rem" }}>
-                <p>
-                    <strong>Status :</strong>{" "}
-                    {connected ? "✅ Connecté" : "❌ Déconnecté"}
-                </p>
-                <p>
-                    <strong>FPS :</strong> {fps}
-                </p>
+        <div style={{ padding: "1rem" }}>
+            <p>Status : {connected ? "✅ Connecté" : "❌ Déconnecté"}</p>
+            <video
+                ref={videoRef}
+                controls
+                autoPlay
+                muted
+                playsInline
+                style={{ width: "100%", backgroundColor: "black" }}
+            />
+            <div
+                style={{
+                    background: "#111",
+                    color: "#0f0",
+                    fontFamily: "monospace",
+                    marginTop: "1rem",
+                    padding: "1rem",
+                    maxHeight: "300px",
+                    overflow: "auto",
+                    fontSize: "0.8rem",
+                    border: "1px solid #444",
+                }}
+            >
+                {log.map((line, idx) => (
+                    <div key={idx}>{line}</div>
+                ))}
             </div>
-
-            {/* Affichage de l'image de prévisualisation avant la vidéo */}
-            {thumbnail ? (
-                <img src={thumbnail} alt="Preview" style={{ width: "100%" }} />
-            ) : (
-                <video
-                    ref={videoRef}
-                    controls
-                    autoPlay
-                    muted
-                    playsInline
-                    style={{ width: "100%", backgroundColor: "black" }}
-                />
-            )}
         </div>
     );
 };
 
-export default WebMStreamPlayer;
+export default StreamPlayer;
